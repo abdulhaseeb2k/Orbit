@@ -1,0 +1,117 @@
+# ============================================================
+#  Orbit — .gitignore
+#  Anything below must NEVER reach the public repository.
+# ============================================================
+
+# ---------- 1. SECRETS & SIGNING (highest priority) ----------
+secrets.properties
+local.properties
+app/google-services.json
+desktop/google-services.json
+google-services.json
+*.keystore
+*.jks
+*.p12
+*.pfx
+*.pem
+*.key
+keystore.properties
+signing.properties
+.env
+.env.*
+!secrets.properties.example
+!.env.example
+
+# ---------- 2. BUILD OUTPUT ----------
+build/
+*/build/
+**/build/
+out/
+bin/
+gen/
+/release/
+*.apk
+*.aab
+*.aar
+*.ap_
+*.dex
+*.class
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+*.msi
+*.exe
+*.dmg
+*.deb
+*.rpm
+*.hprof
+lint-results*.html
+lint-results*.xml
+
+# ---------- 3. GRADLE / KOTLIN CACHES ----------
+.gradle/
+.kotlin/
+gradle-app.setting
+!gradle-wrapper.properties
+.cxx/
+captures/
+.externalNativeBuild/
+
+# ---------- 4. BUNDLED THIRD-PARTY BINARIES ----------
+# ffmpeg / ffprobe / yt-dlp are downloaded at first launch (see COMMANDS.md).
+# ~215 MB — kept out of git on purpose.
+desktop/resources/**/tools/
+tools/ffmpeg*
+tools/ffprobe*
+tools/yt-dlp*
+
+# ---------- 5. IDE / EDITOR ----------
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+*.swp
+*.swo
+*~
+.settings/
+.project
+.classpath
+
+# ---------- 6. OS JUNK ----------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ---------- 7. INTERNAL / PRIVATE DOCS ----------
+# Public docs are README.md, COMMANDS.md and docs/screenshots/ only.
+FIREBASE_SETUP.md
+DESKTOP_PLAN.md
+RELEASE_NOTES.md
+docs/**/*.html
+docs/**/design-*
+docs/**/orbit-redesign-plan*
+!docs/screenshots/
+.artifacts/
+_linkedin_assets/
+_to_delete/
+publish-*.cmd
+publish-*.sh
+notes/
+scratch/
+TODO.private.md
+
+# ---------- 8. LOGS & TEMP ----------
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+*.bak
+*.orig
+*.rej
