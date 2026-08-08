@@ -4,6 +4,8 @@ import com.vibecaster.data.Track
 import com.vibecaster.youtube.YouTubeResolver
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
+import java.util.concurrent.atomic.AtomicLong
 import java.io.File
 import java.io.FileWriter
 import java.io.InputStream
@@ -130,13 +132,45 @@ class DesktopPlayer {
     val ffmpegAvailable: Boolean get() = ffmpegPath != null
 
     private val sampleRate = 48000
-    @Volatile private var processes = mutableListOf<Process>()
+    private val processes = mutableListOf<Process>()
     @Volatile private var line: SourceDataLine? = null
     @Volatile private var playThread: Thread? = null
     @Volatile private var paused = false
-    @Volatile private var stopRequested = false
-    @Volatile private var baseMs = 0L
-    @Volatile private var framesWritten = 0L
+
+    /**
+     * Playback generation. Every play() and stop() bumps it, which instantly
+     * invalidates any thread left over from an earlier attempt.
+     *
+     * This replaces a single `stopRequested` boolean. That flag was set by
+     * stop() and then cleared again by the NEXT play() — so an audio thread
+     * that outlived stop()'s join(1500) (easy: it can sit in a
+     * non-interruptible OkHttp socket read for 20s+) woke up to find itself
+     * un-cancelled, opened a second SourceDataLine and played a second track
+     * over the first. A monotonic counter cannot be un-cancelled: once a
+     * generation is superseded it is superseded forever.
+     */
+    private val generation = AtomicLong(0)
+
+    private fun isCurrent(gen: Long) = generation.get() == gen
+
+    /**
+     * Applies a state update only while [gen] is still the live playback.
+     * Uses update {} rather than value = value.copy(): the audio thread writes
+     * position ~23x/second and would otherwise clobber a pause() that landed
+     * between its read and its write, flipping the transport back to "playing".
+     */
+    private fun setState(gen: Long, block: (PlayerState) -> PlayerState) {
+        if (!isCurrent(gen)) return
+        _state.update { if (isCurrent(gen)) block(it) else it }
+    }
+
+    /** Tracks a child process for cleanup, or kills it if [gen] is already stale. */
+    private fun register(gen: Long, p: Process): Process {
+        synchronized(processes) {
+            if (isCurrent(gen)) processes.add(p) else p.destroyForcibly()
+        }
+        return p
+    }
 
     fun play(track: Track, startMs: Long = 0) {
         stop()
@@ -148,7 +182,8 @@ class DesktopPlayer {
             )
             return
         }
-        stopRequested = false
+        // Claim this attempt. Anything older is now stale by definition.
+        val gen = generation.incrementAndGet()
         paused = false
         // positionMs = startMs keeps the slider from snapping to 0 mid-seek (seek-reset bug fix)
         _state.value = PlayerState(track = track, isBuffering = true,
@@ -165,8 +200,8 @@ class DesktopPlayer {
                     if (startMs > 0) { cmd += "-ss"; cmd += (startMs / 1000.0).toString() }
                     cmd += listOf("-i", localPath, "-vn", "-f", "s16le", "-acodec", "pcm_s16le",
                         "-ac", "2", "-ar", sampleRate.toString(), "pipe:1")
-                    val r = runAudio(ProcessBuilder(cmd), startMs)
-                    finish(r.first)
+                    val r = runAudio(gen, ProcessBuilder(cmd), startMs)
+                    finish(gen, r.first)
                     return@thread
                 }
 
@@ -177,13 +212,13 @@ class DesktopPlayer {
                 } catch (e: InterruptedException) {
                     return@thread   // user started another track — exit quietly
                 } catch (e: Exception) {
-                    if (stopRequested) return@thread
+                    if (!isCurrent(gen)) return@thread
                     OrbitLog.log("resolve failed: $e"); null
                 }
 
                 var played = 0L
                 var lastErr = ""
-                if (streamUrl != null && !stopRequested) {
+                if (streamUrl != null && isCurrent(gen)) {
                     val cmd = mutableListOf(ffmpeg, "-hide_banner", "-loglevel", "error")
                     if (startMs > 0) { cmd += "-ss"; cmd += (startMs / 1000.0).toString() }
                     cmd += listOf(
@@ -192,63 +227,77 @@ class DesktopPlayer {
                         "-i", streamUrl,
                         "-vn", "-f", "s16le", "-acodec", "pcm_s16le", "-ac", "2", "-ar", sampleRate.toString(), "pipe:1"
                     )
-                    val r = runAudio(ProcessBuilder(cmd), startMs)
+                    val r = runAudio(gen, ProcessBuilder(cmd), startMs)
                     played = r.first; lastErr = r.second
-                    if (played > 0 || stopRequested) { finish(played); return@thread }
+                    if (played > 0 || !isCurrent(gen)) { finish(gen, played); return@thread }
                     OrbitLog.log("direct path failed (0 audio). stderr: $lastErr")
                 }
 
                 // Path 2: yt-dlp pipes the media file, ffmpeg decodes from stdin
                 val ytdlp = ytDlpPath
-                if (ytdlp != null && !stopRequested) {
+                if (ytdlp != null && isCurrent(gen)) {
                     OrbitLog.log("falling back to yt-dlp pipe")
-                    _state.value = _state.value.copy(isBuffering = true, error = null)
+                    setState(gen) { it.copy(isBuffering = true, error = null) }
                     val watch = track.sourceUrl ?: track.uri
                     val ytCmd = mutableListOf(ytdlp, "-f", "bestaudio/best", "--no-playlist", "-q", "-o", "-")
                     nodePath?.let { ytCmd += listOf("--js-runtimes", "node:$it") }
+                    ytCmd += "--"   // end of options — never treat a URL as a flag
                     ytCmd += watch
                     val ffCmd = mutableListOf(ffmpeg, "-hide_banner", "-loglevel", "error", "-i", "pipe:0")
                     if (startMs > 0) { ffCmd += "-ss"; ffCmd += (startMs / 1000.0).toString() } // decode-skip
                     ffCmd += listOf("-vn", "-f", "s16le", "-acodec", "pcm_s16le", "-ac", "2", "-ar", sampleRate.toString(), "pipe:1")
 
-                    val yt = ProcessBuilder(ytCmd).start().also { synchronized(processes) { processes.add(it) } }
+                    val yt = register(gen, ProcessBuilder(ytCmd).start())
                     val ytErr = collectStderr(yt)
-                    val r = runAudio(ProcessBuilder(ffCmd), startMs) { ff ->
-                        // pump yt-dlp stdout -> ffmpeg stdin
-                        thread(isDaemon = true, name = "orbit-pump") {
-                            try { yt.inputStream.copyTo(ff.outputStream, 65536); ff.outputStream.close() }
-                            catch (_: Exception) {}
+                    // finally: if runAudio bails (e.g. the audio device is busy)
+                    // the pump thread dies, nobody drains yt-dlp's stdout, and
+                    // yt-dlp blocks forever on a full 64 KB pipe — an orphaned
+                    // process and network connection per failed attempt.
+                    val r = try {
+                        runAudio(gen, ProcessBuilder(ffCmd), startMs) { ff ->
+                            // pump yt-dlp stdout -> ffmpeg stdin
+                            thread(isDaemon = true, name = "orbit-pump") {
+                                try { yt.inputStream.copyTo(ff.outputStream, 65536); ff.outputStream.close() }
+                                catch (_: Exception) {}
+                            }
                         }
+                    } finally {
+                        yt.destroyForcibly()
                     }
                     played = r.first
-                    if (played > 0 || stopRequested) { finish(played); return@thread }
+                    if (played > 0 || !isCurrent(gen)) { finish(gen, played); return@thread }
                     lastErr = "yt-dlp: ${ytErr.toString().takeLast(400)} | ffmpeg: ${r.second}"
                     OrbitLog.log("yt-dlp path failed too. $lastErr")
                 }
 
-                if (!stopRequested) {
+                if (isCurrent(gen)) {
                     val hint = if (ytDlpPath == null)
                         "\nFix: install yt-dlp → winget install yt-dlp.yt-dlp, then restart Orbit."
                     else "\nDetails: ${OrbitLog.file.absolutePath}"
-                    _state.value = _state.value.copy(
-                        isPlaying = false, isBuffering = false,
-                        error = "Couldn't play this track. ${lastErr.takeLast(220)}$hint"
-                    )
+                    setState(gen) {
+                        it.copy(
+                            isPlaying = false, isBuffering = false,
+                            error = "Couldn't play this track. ${lastErr.takeLast(220)}$hint"
+                        )
+                    }
                 }
             } catch (_: InterruptedException) {
             } catch (e: Exception) {
                 OrbitLog.log("fatal: $e")
-                if (!stopRequested) _state.value = _state.value.copy(
-                    isPlaying = false, isBuffering = false, error = "Playback error: ${e.message}"
-                )
+                setState(gen) {
+                    it.copy(isPlaying = false, isBuffering = false, error = "Playback error: ${e.message}")
+                }
             }
         }
     }
 
-    private fun finish(played: Long) {
-        if (!stopRequested) _state.value = _state.value.copy(isPlaying = false, isBuffering = false, positionMs = 0)
+    private fun finish(gen: Long, played: Long) {
+        setState(gen) { it.copy(isPlaying = false, isBuffering = false, positionMs = 0) }
         OrbitLog.log("finished (frames=$played)")
-        if (!stopRequested && played > 0) onEnded?.invoke()
+        // Only the live generation may auto-advance the queue. A superseded
+        // thread reaching its end used to fire onEnded and skip a track the
+        // user never asked to skip.
+        if (isCurrent(gen) && played > 0) onEnded?.invoke()
     }
 
     private fun collectStderr(p: Process): StringBuilder {
@@ -265,8 +314,14 @@ class DesktopPlayer {
     }
 
     /** Runs ffmpeg, streams PCM to the audio device. Returns (framesPlayed, stderrText). */
-    private fun runAudio(pb: ProcessBuilder, startMs: Long, onStart: ((Process) -> Unit)? = null): Pair<Long, String> {
-        val proc = pb.start().also { synchronized(processes) { processes.add(it) } }
+    private fun runAudio(
+        gen: Long,
+        pb: ProcessBuilder,
+        startMs: Long,
+        onStart: ((Process) -> Unit)? = null
+    ): Pair<Long, String> {
+        if (!isCurrent(gen)) return 0L to "superseded"
+        val proc = register(gen, pb.start())
         val err = collectStderr(proc)
         onStart?.invoke(proc)
 
@@ -276,14 +331,19 @@ class DesktopPlayer {
         } catch (e: Exception) {
             proc.destroyForcibly()
             OrbitLog.log("audio device error: $e")
-            _state.value = _state.value.copy(isPlaying = false, isBuffering = false,
-                error = "Audio device error: ${e.message}")
+            setState(gen) {
+                it.copy(isPlaying = false, isBuffering = false, error = "Audio device error: ${e.message}")
+            }
             return 0L to "audio-device"
         }
-        line = out
+        // A stale generation must never take ownership of the shared line.
+        if (isCurrent(gen)) line = out else { runCatching { out.close() }; return 0L to "superseded" }
 
-        baseMs = startMs
-        framesWritten = 0
+        // Position counters are LOCALS now. As instance fields two overlapping
+        // playback threads shared them, so a surviving old thread rewound the
+        // new track's position.
+        val baseMs = startMs
+        var framesWritten = 0L
         eightD.resetPhase()
         tone.reset()
 
@@ -294,9 +354,9 @@ class DesktopPlayer {
         var started = false
 
         try {
-            while (!stopRequested) {
-                while (paused && !stopRequested) { out.stop(); Thread.sleep(50) }
-                if (stopRequested) break
+            while (isCurrent(gen)) {
+                while (paused && isCurrent(gen)) { out.stop(); Thread.sleep(50) }
+                if (!isCurrent(gen)) break
                 if (!out.isRunning) out.start()
 
                 var off = 0
@@ -328,12 +388,12 @@ class DesktopPlayer {
                 if (!started) {
                     started = true
                     OrbitLog.log("audio flowing")
-                    _state.value = _state.value.copy(isPlaying = true, isBuffering = false, error = null)
+                    setState(gen) { it.copy(isPlaying = true, isBuffering = false, error = null) }
                 }
-                _state.value = _state.value.copy(positionMs = baseMs + framesWritten * 1000 / sampleRate)
+                setState(gen) { it.copy(positionMs = baseMs + framesWritten * 1000 / sampleRate) }
             }
         } finally {
-            try { if (framesWritten > 0 && !stopRequested) out.drain() } catch (_: Exception) {}
+            try { if (framesWritten > 0 && isCurrent(gen)) out.drain() } catch (_: Exception) {}
             try { out.close() } catch (_: Exception) {}
             if (line === out) line = null
             proc.destroyForcibly()
@@ -341,23 +401,34 @@ class DesktopPlayer {
         return framesWritten to err.toString().takeLast(500)
     }
 
-    fun pause() { paused = true; _state.value = _state.value.copy(isPaused = true, isPlaying = false) }
+    fun pause() { paused = true; _state.update { it.copy(isPaused = true, isPlaying = false) } }
 
-    fun resume() { paused = false; _state.value = _state.value.copy(isPaused = false, isPlaying = true) }
+    fun resume() { paused = false; _state.update { it.copy(isPaused = false, isPlaying = true) } }
 
     fun seekTo(ms: Long) {
         val t = _state.value.track ?: return
         play(t, ms.coerceAtLeast(0))
     }
 
+    /**
+     * Stops playback. Returns immediately — it does NOT join the audio thread.
+     *
+     * play() calls this first, and play()/seekTo() are invoked straight from
+     * Compose click and key handlers, so the old join(1500) froze the whole
+     * window for up to 1.5s every time the user clicked a different track or
+     * held the seek key. Joining is also unnecessary now: bumping the
+     * generation makes the old thread inert, destroying its processes ends its
+     * blocking read, and closing the line unblocks a stalled write. It then
+     * unwinds and cleans up after itself in its own finally.
+     */
     fun stop() {
-        stopRequested = true
+        generation.incrementAndGet()
         paused = false
         synchronized(processes) { processes.forEach { it.destroyForcibly() }; processes.clear() }
         playThread?.interrupt()
-        playThread?.join(1500)
-        line?.close(); line = null
         playThread = null
-        _state.value = _state.value.copy(isPlaying = false, isPaused = false, isBuffering = false, positionMs = 0)
+        runCatching { line?.close() }
+        line = null
+        _state.update { it.copy(isPlaying = false, isPaused = false, isBuffering = false, positionMs = 0) }
     }
 }

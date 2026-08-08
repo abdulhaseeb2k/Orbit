@@ -33,5 +33,20 @@ fun youTubeVideoId(url: String?): String? {
  * links with extra ?si=/playlist parameters, etc.), so the "downloaded"
  * tick shows up correctly everywhere.
  */
-fun Track.matchKey(): String =
-    youTubeVideoId(sourceUrl)?.let { "yt:$it" } ?: (sourceUrl ?: uri)
+private val AUDIUS_ID = Regex("/v1/tracks/([A-Za-z0-9]+)/stream")
+
+/** Extracts an Audius track id from either "audius:<id>" or a stream URL. */
+fun audiusTrackId(url: String?): String? {
+    if (url.isNullOrBlank()) return null
+    if (url.startsWith("audius:")) return url.removePrefix("audius:").ifBlank { null }
+    return AUDIUS_ID.find(url)?.groupValues?.get(1)
+}
+
+fun Track.matchKey(): String {
+    youTubeVideoId(sourceUrl)?.let { return "yt:$it" }
+    // Audius stream URLs embed whichever discovery host answered this session,
+    // so the raw URL is not a stable identity — the same song produced a
+    // different key after a sync (or even after a restart) and showed up twice.
+    audiusTrackId(sourceUrl ?: uri)?.let { return "audius:$it" }
+    return sourceUrl ?: uri
+}

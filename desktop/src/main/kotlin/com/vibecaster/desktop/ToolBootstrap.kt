@@ -32,6 +32,9 @@ object ToolBootstrap {
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS)
+        // These downloads become executables we then RUN, so a server-issued
+        // https -> http redirect must never be followed silently.
+        .followSslRedirects(false)
         .build()
     private val isWindows = System.getProperty("os.name").lowercase().contains("win")
     @Volatile private var started = false

@@ -42,8 +42,10 @@ class EightD {
             val gainR = sin(angle)
             val dist = 0.88 + 0.12 * cos(phase)
 
-            samples[i] = clamp(bl * gainL * dist * 1.1)
-            samples[i + 1] = clamp(br * gainR * dist * 1.1)
+            // Makeup gain: 1.1 peaked at 1.022 and clipped loud masters.
+            // Must stay identical to EightDAudioProcessor.MAKEUP_GAIN.
+            samples[i] = clamp(bl * gainL * dist * 1.075)
+            samples[i + 1] = clamp(br * gainR * dist * 1.075)
 
             phase += if (reverse) -inc else inc
             if (phase >= 2.0 * Math.PI) phase -= 2.0 * Math.PI

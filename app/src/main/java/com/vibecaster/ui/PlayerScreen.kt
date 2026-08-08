@@ -64,7 +64,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -238,7 +238,12 @@ fun PlayerScreen(vm: MainViewModel, onClose: () -> Unit) {
                     .size(256.dp)
                     .background(DeepSpace, CircleShape)
             )
-            Box(modifier = Modifier.rotate(angle)) {
+            // graphicsLayer, NOT Modifier.rotate: the lambda defers reading
+            // `angle` to the draw phase. Reading it here instead put it in
+            // PlayerScreen's restart scope (Column/Box are inline), so the whole
+            // screen — gradients, sliders, EQ panel — recomposed every frame
+            // while a track was playing.
+            Box(modifier = Modifier.graphicsLayer { rotationZ = angle }) {
                 Artwork(
                     model = current?.artworkUri,
                     size = 238.dp,

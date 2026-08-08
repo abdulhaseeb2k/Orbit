@@ -1,8 +1,32 @@
 # Orbit — 8D Audio Experience
 
+<p align="center">
+  <a href="https://github.com/abdulhaseeb2k/Orbit/releases/latest"><img src="https://img.shields.io/github/v/release/abdulhaseeb2k/Orbit?color=7C3AED&label=release" alt="Latest release"></a>
+  <img src="https://img.shields.io/badge/platform-Android%20%7C%20Windows-A78BFA" alt="Platform">
+  <img src="https://img.shields.io/badge/Android-12%2B-A78BFA" alt="Android 12+">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-F472B6" alt="GPL-3.0"></a>
+  <img src="https://img.shields.io/badge/Kotlin-Compose%20Multiplatform-22D3EE" alt="Kotlin">
+</p>
+
+Orbit is a free music player for **Android and Windows**, built around real-time
+**8D spatial audio** — the sound orbits around your head, hence the name. It streams
+from YouTube and Audius, downloads for offline play, and adds bass/treble control on
+top. Both apps share one Kotlin core, so the effect sounds the same everywhere.
+
 *(formerly VibeCaster)*
 
-Orbit is a personal Android music player built around real-time **8D spatial audio** — the sound orbits around your head, hence the name. It streams from YouTube/Audius, downloads for offline play, and adds bass/treble control on top.
+## ⬇️ Download
+
+| Platform | File | Requirements |
+|---|---|---|
+| 📱 Android | [`orbit-android-v1.3.0.apk`](https://github.com/abdulhaseeb2k/Orbit/releases/latest) | Android 12+ · sideload (enable "Install unknown apps") |
+| 🖥️ Windows | [`orbit-desktop-v1.3.0.msi`](https://github.com/abdulhaseeb2k/Orbit/releases/latest) | Windows 10/11 · ffmpeg + yt-dlp bundled, nothing to install |
+
+All downloads also live on **[abdulhaseeb2k.github.io](https://abdulhaseeb2k.github.io)**.
+It is completely free — no ads, no subscription, no account required.
+
+> 💬 **Found a bug or want a feature?** Open an
+> [issue](https://github.com/abdulhaseeb2k/Orbit/issues) — suggestions genuinely get built.
 
 ## 📸 Screenshots
 
@@ -17,10 +41,8 @@ Orbit is a personal Android music player built around real-time **8D spatial aud
   <img src="docs/screenshots/phone-player.png" alt="Player — 8D presets front and center" width="180">
 </p>
 
-> These are the design previews the app was built from. To swap in real
-> screenshots: take them (phone: Power+Vol-down · desktop: Win+Shift+S),
-> overwrite the files in `docs/screenshots/` **keeping the same filenames**,
-> and the README updates itself.
+> ℹ️ These are the design previews the apps were built from — the shipped UI
+> follows them closely. Real device captures are on the way.
 
 ## 🚀 Features
 
@@ -113,6 +135,13 @@ No API keys are stored in this repository. Before your first build:
 
 All three files are gitignored. Sync is optional — both apps run fully offline
 without any of them.
+
+If you enable sync on your own Firebase project, deploy the access rules too —
+`firestore.rules` in this repo restricts every document to its owner:
+
+```bash
+firebase deploy --only firestore:rules
+```
 
 ## 🛠️ Installation & Build
 

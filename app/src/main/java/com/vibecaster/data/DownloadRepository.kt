@@ -73,6 +73,14 @@ object DownloadRepository {
         isCancelled: () -> Boolean = { false },
         onProgress: (Float) -> Unit
     ): Track {
+        // Guard the contract in the KDoc above. Synced tracks arrive with
+        // uri = "" and must be re-resolved by the caller first; without this
+        // check OkHttp fails with the opaque "Expected URL scheme http/https
+        // but no scheme found", which tells the user nothing.
+        require(track.uri.startsWith("http")) {
+            "No stream link for \"${track.title}\" yet — it needs to be resolved before downloading."
+        }
+
         val d = dir(context)
         val safe = track.title
             .replace(Regex("[^A-Za-z0-9 _.-]"), "")

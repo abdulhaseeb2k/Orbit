@@ -207,6 +207,10 @@ object Store {
         val outTemplate = File(downloadsDir, "$base.%(ext)s").absolutePath
         val cmd = mutableListOf(ytdlp, "-f", "bestaudio/best", "--no-playlist", "--newline", "-o", outTemplate)
         nodePath?.let { cmd += listOf("--js-runtimes", "node:$it") }
+        // "--" ends option parsing. Without it a sourceUrl beginning with "-"
+        // (which can arrive from sync or a hand-edited playlists.json) is read
+        // by yt-dlp as a flag — including --exec, which runs shell commands.
+        cmd += "--"
         cmd += watch
         val p = ProcessBuilder(cmd).redirectErrorStream(true).start()
         val pct = Regex("""\[download]\s+([\d.]+)%""")

@@ -55,7 +55,20 @@ fun formatTime(ms: Long): String {
     return "%d:%02d".format(s / 60, s % 60)
 }
 
-private val artCache = Collections.synchronizedMap(HashMap<String, ImageBitmap?>())
+/**
+ * Artwork cache, capped. Covers are decoded at source resolution (a 1280x720
+ * YouTube thumbnail is ~3.7 MB in memory) but drawn at 44-154 dp, so the old
+ * unbounded map grew straight towards OOM while browsing. LinkedHashMap in
+ * access order + removeEldestEntry gives a plain LRU.
+ */
+private const val ART_CACHE_MAX = 120
+
+private val artCache: MutableMap<String, ImageBitmap?> = Collections.synchronizedMap(
+    object : LinkedHashMap<String, ImageBitmap?>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ImageBitmap?>) =
+            size > ART_CACHE_MAX
+    }
+)
 
 /** Loads (and caches) artwork as an ImageBitmap — usable anywhere in the UI. */
 @Composable

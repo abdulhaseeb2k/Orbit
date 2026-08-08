@@ -18,6 +18,15 @@ import kotlin.math.sin
 @UnstableApi
 class EightDAudioProcessor : BaseAudioProcessor() {
 
+    private companion object {
+        /**
+         * Output makeup gain. The peak of gainL*dist at full depth is 0.9291,
+         * so the old 1.1 reached 1.022 and hard-clipped loud masters on every
+         * rotation. Keep in step with desktop's Dsp.kt.
+         */
+        const val MAKEUP_GAIN = 1.075
+    }
+
     /** Master on/off. When off, audio passes through untouched. */
     @Volatile var effectEnabled: Boolean = true
 
@@ -33,7 +42,7 @@ class EightDAudioProcessor : BaseAudioProcessor() {
     /** Reverses the rotation direction (counter-clockwise). */
     @Volatile var reverse: Boolean = false
 
-    private var phase: Double = 0.0
+    @Volatile private var phase: Double = 0.0
 
     /** Current LFO phase (radians) — read by the UI orbit visualizer. */
     val currentPhase: Double get() = phase
@@ -93,8 +102,11 @@ class EightDAudioProcessor : BaseAudioProcessor() {
                 // Subtle "distance" modulation for a circular (not just L-R) feel.
                 val dist = 0.88 + 0.12 * cos(phase)
 
-                out.putShort(clamp(bl * gainL * dist * 1.1))
-                out.putShort(clamp(br * gainR * dist * 1.1))
+                // Makeup gain. 1.1 pushed the peak of gainL*dist to ~1.022 at
+                // full depth, so loud masters clipped on every rotation cycle;
+                // 1.075 keeps the same loudness lift while staying under 1.0.
+                out.putShort(clamp(bl * gainL * dist * MAKEUP_GAIN))
+                out.putShort(clamp(br * gainR * dist * MAKEUP_GAIN))
 
                 phase += if (reverse) -inc else inc
                 if (phase >= 2.0 * Math.PI) phase -= 2.0 * Math.PI

@@ -29,10 +29,38 @@ compose.desktop {
             packageName = "Orbit"
             packageVersion = "1.3.0"
             description = "Orbit — 8D Audio Experience (desktop)"
+            vendor = "Abdul Haseeb"
+            copyright = "Copyright (c) 2026 Abdul Haseeb. Licensed under GPL-3.0."
             // Ships everything under desktop/resources/<platform>/ inside the
             // installer — fetchTools puts ffmpeg + yt-dlp there, so packaged
             // builds need NO downloads and NO manual installs at all.
             appResourcesRootDir.set(project.layout.projectDirectory.dir("resources"))
+
+            // Branding for the packaged app. Without these, jpackage stamps the
+            // generic Java "duke" icon onto Orbit.exe, the Start-menu entry, the
+            // taskbar and the installer window. The runtime window/tray icons
+            // (painterResource("orbit.png") in Main.kt) are a separate thing and
+            // never affected the executable itself.
+            // orbit.ico is multi-resolution (16-256px) so Explorer, the taskbar
+            // and Alt-Tab each pick a crisp size instead of rescaling one bitmap.
+            windows {
+                iconFile.set(project.file("icons/orbit.ico"))
+                menuGroup = "Orbit"
+                shortcut = true          // desktop shortcut
+                menu = true              // Start-menu entry
+                dirChooser = true        // let the user pick the install folder
+                // Fixed UpgradeCode: MSIs with the same value upgrade in place.
+                // Leave it alone — changing it makes Windows treat a new build
+                // as a separate product and install it side by side.
+                upgradeUuid = "8c23ddd8-c4ae-4420-a0fd-1732ee2041d6"
+            }
+            macOS {
+                iconFile.set(project.file("icons/orbit.icns"))
+                bundleID = "io.github.abdulhaseeb2k.orbit"
+            }
+            linux {
+                iconFile.set(project.file("icons/orbit.png"))
+            }
         }
     }
 }

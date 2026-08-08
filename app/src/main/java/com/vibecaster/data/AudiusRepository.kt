@@ -45,6 +45,17 @@ object AudiusRepository {
         fetchTracks("$h/v1/tracks/search?query=${URLEncoder.encode(query, "UTF-8")}&app_name=$APP_NAME", h)
     }
 
+    /**
+     * Rebuilds a playable stream URL from a bare track id.
+     *
+     * Synced tracks only carry sourceUrl = "audius:<id>" (the discovery host
+     * differs per device and per session), so the URL has to be built again
+     * against a live host before the track can be streamed or downloaded.
+     */
+    suspend fun streamUrl(trackId: String): String = withContext(Dispatchers.IO) {
+        "${pickHost()}/v1/tracks/$trackId/stream?app_name=$APP_NAME"
+    }
+
     /** Audius trending tracks — the default feed for Discover. */
     suspend fun trending(): List<Track> = withContext(Dispatchers.IO) {
         val h = pickHost()

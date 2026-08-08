@@ -29,6 +29,7 @@ import com.vibecaster.data.PlaylistRepository
 import com.vibecaster.data.Recommender
 import com.vibecaster.data.Track
 import com.vibecaster.data.matchKey
+import com.vibecaster.data.youTubeVideoId
 import com.vibecaster.data.UpdateRepository
 import com.vibecaster.sync.AuthManager
 import com.vibecaster.sync.AuthSession
@@ -325,30 +326,38 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }.getOrNull() ?: "1.0"
     }
 
+    /**
+     * Held so onCleared() can detach it. PlayerHolder.player is a
+     * process-wide singleton, so an anonymous listener registered and
+     * never removed kept this ViewModel (and its Application ref) alive
+     * for the life of the process — one more leak per Activity restart.
+     */
+    private val playerListener = object : Player.Listener {
+        override fun onIsPlayingChanged(playing: Boolean) {
+            _isPlaying.value = playing
+        }
+
+        override fun onPlaybackStateChanged(state: Int) {
+            _isBuffering.value = state == Player.STATE_BUFFERING
+        }
+
+        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            _queueIndex.value = player.currentMediaItemIndex
+            _current.value = _queue.value.getOrNull(player.currentMediaItemIndex) ?: _current.value
+            _lyrics.value = null
+        }
+
+        override fun onPlayerError(error: PlaybackException) {
+            Log.e(TAG, "Playback error", error)
+            if (_current.value?.fromYouTube == true) {
+                _ytError.value =
+                    "Playback failed (${error.errorCodeName}). The stream URL may have expired — resolve the link again."
+            }
+        }
+    }
+
     init {
-        player.addListener(object : Player.Listener {
-            override fun onIsPlayingChanged(playing: Boolean) {
-                _isPlaying.value = playing
-            }
-
-            override fun onPlaybackStateChanged(state: Int) {
-                _isBuffering.value = state == Player.STATE_BUFFERING
-            }
-
-            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                _queueIndex.value = player.currentMediaItemIndex
-                _current.value = _queue.value.getOrNull(player.currentMediaItemIndex) ?: _current.value
-                _lyrics.value = null
-            }
-
-            override fun onPlayerError(error: PlaybackException) {
-                Log.e(TAG, "Playback error", error)
-                if (_current.value?.fromYouTube == true) {
-                    _ytError.value =
-                        "Playback failed (${error.errorCodeName}). The stream URL may have expired — resolve the link again."
-                }
-            }
-        })
+        player.addListener(playerListener)
         // Position ticker
         viewModelScope.launch {
             while (true) {
@@ -580,6 +589,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
+        player.removeListener(playerListener)
         mediaController?.release()
         mediaController = null
         super.onCleared()
@@ -740,15 +750,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 delay(1000)
                 remaining -= 1000
             }
-            _sleepRemainingMs.value = null
-            // Gentle 10-second fade-out instead of an abrupt stop (report §8)
+            // Gentle 10-second fade-out instead of an abrupt stop.
+            // The restore MUST be in a finally: cancelling the timer mid-fade
+            // used to kill the coroutine at half volume, and nothing else in
+            // the app ever writes player.volume — so every later song stayed
+            // quiet until the process was restarted.
             val startVol = player.volume
-            for (i in 1..20) {
-                player.volume = startVol * (1f - i / 20f)
-                delay(500)
+            try {
+                for (i in 1..20) {
+                    player.volume = startVol * (1f - i / 20f)
+                    delay(500)
+                }
+                player.pause()
+            } finally {
+                player.volume = startVol
+                _sleepRemainingMs.value = null
             }
-            player.pause()
-            player.volume = startVol
         }
     }
 
@@ -927,8 +944,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Plays any track: YouTube tracks are resolved first, others play directly. */
     fun playTrack(track: Track, list: List<Track> = listOf(track)) {
-        if (track.fromYouTube && track.uri.isBlank()) {
-            playFromYouTube(track.sourceUrl ?: return)
+        // A synced track has uri = "" until it is re-resolved. Keying off
+        // fromYouTube alone let those fall through to play(), which filters
+        // blank uris out — so tapping the song did nothing at all.
+        val youTubeUrl = track.sourceUrl
+            ?.takeIf { track.fromYouTube || youTubeVideoId(it) != null }
+        if (track.uri.isBlank() && youTubeUrl != null) {
+            playFromYouTube(youTubeUrl)
         } else {
             play(track, list.filter { it.uri.isNotBlank() })
         }
@@ -1063,15 +1085,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         _downloadProgress.value = _downloadProgress.value + (track.id to p)
                     }
                 }
-                // YouTube tracks need a fresh, storage-optimized stream URL first.
-                val prepared = if (track.fromYouTube) {
-                    val resolved = YouTubeResolver.resolve(
+                // Work out what this track IS from its sourceUrl, not from the
+                // fromYouTube flag. Downloading clears that flag (the local copy
+                // is a file, not a stream), so a downloaded-then-synced song
+                // arrives on a fresh install with uri = "" and fromYouTube =
+                // false. Trusting the flag sent uri = "" straight into OkHttp,
+                // which failed with "Expected URL scheme http/https".
+                val isYouTube = track.fromYouTube || youTubeVideoId(track.sourceUrl) != null
+                val audiusId = track.sourceUrl
+                    ?.takeIf { it.startsWith("audius:") }
+                    ?.removePrefix("audius:")
+
+                val prepared = when {
+                    // YouTube stream URLs expire — always fetch a fresh one.
+                    isYouTube -> YouTubeResolver.resolve(
                         track.sourceUrl ?: error("Missing video link"),
                         compact = true
-                    )
-                    resolved.copy(id = track.id) // keeps canonical sourceUrl
-                } else {
-                    track.copy(sourceUrl = key)
+                    ).copy(id = track.id) // keeps canonical sourceUrl
+
+                    // Synced Audius tracks only carry "audius:<id>"; the host
+                    // that serves the stream has to be looked up again.
+                    audiusId != null ->
+                        track.copy(uri = AudiusRepository.streamUrl(audiusId), sourceUrl = key)
+
+                    track.uri.startsWith("http") -> track.copy(sourceUrl = key)
+
+                    else -> error("This track has no playable link — try opening it once first.")
                 }
                 val local = try {
                     attempt(prepared)
@@ -1080,7 +1119,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 } catch (e: Throwable) {
                     // YouTube URLs go stale / get blocked per-format. One retry
                     // with a FRESH resolve and a different stream usually works.
-                    if (track.fromYouTube && track.sourceUrl != null) {
+                    if (isYouTube && track.sourceUrl != null) {
                         Log.w(TAG, "Download attempt 1 failed (${e.message}), retrying with fresh stream")
                         _downloadProgress.value = _downloadProgress.value + (track.id to 0f)
                         val fresh = YouTubeResolver.resolve(track.sourceUrl!!, compact = false)

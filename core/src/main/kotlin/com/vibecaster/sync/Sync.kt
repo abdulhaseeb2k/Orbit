@@ -75,7 +75,13 @@ object SyncClient {
             }
         }
         return when {
-            s.fromYouTube || (s.sourceUrl?.let { youTube(it) } == true) -> s.copy(uri = "")
+            // Keep fromYouTube = true alongside the blank uri. Downloading a
+            // track clears that flag (the local copy is a file, not a stream),
+            // so without this a downloaded-then-synced song arrives on the next
+            // device as uri="" AND fromYouTube=false — and nothing knows it
+            // still has to be re-resolved from sourceUrl before use.
+            s.fromYouTube || (s.sourceUrl?.let { youTube(it) } == true) ->
+                s.copy(uri = "", fromYouTube = true)
             s.uri.startsWith("http") -> s
             s.sourceUrl != null -> s.copy(uri = "")
             else -> null

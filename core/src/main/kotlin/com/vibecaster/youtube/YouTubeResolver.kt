@@ -30,6 +30,13 @@ object YouTubeResolver {
     @Volatile
     private var initialized = false
 
+    /**
+     * Guards NewPipe's process-global localization. It must be a real object:
+     * `synchronized(this)` inside a `withContext { }` block locks the freshly
+     * created coroutine, not the resolver, so it excluded nothing at all.
+     */
+    private val localeLock = Any()
+
     private fun ensureInit() {
         if (initialized) return
         synchronized(this) {
@@ -192,7 +199,7 @@ object YouTubeResolver {
                 .relatedItems.filterIsInstance<StreamInfoItem>()
         }
 
-        val items: List<StreamInfoItem> = synchronized(this) {
+        val items: List<StreamInfoItem> = synchronized(localeLock) {
             var result: List<StreamInfoItem> = emptyList()
             if ("trending_music" in kioskList.availableKiosks) {
                 for (country in listOf("PK", "IN", "US")) {

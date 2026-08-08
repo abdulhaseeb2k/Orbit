@@ -1,0 +1,29 @@
+rules_version = '2';
+
+// Orbit — Firestore security rules.
+//
+// The apps talk to Firestore over plain REST and build document paths from the
+// signed-in uid on the CLIENT. Nothing client-side can enforce access control,
+// so these rules are the only thing standing between one user's library and
+// everyone else's. Deploy them before the project is used for real:
+//
+//     firebase deploy --only firestore:rules
+//
+// If the project is still on the console's "test mode" default
+// (allow read, write: if request.auth != null) then ANY signed-in account can
+// read and overwrite ANY other account's playlists, history and device list.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Everything Orbit stores lives under the owner's own uid.
+    // request.auth.uid comes from the verified ID token, not from the client.
+    match /users/{uid}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // Deny anything outside that subtree.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
